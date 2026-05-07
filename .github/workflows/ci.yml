@@ -1,0 +1,135 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  TORCH_HOME: ${{ github.workspace }}/.torch-cache
+
+jobs:
+  lint-py:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]" --extra-index-url https://download.pytorch.org/whl/cpu
+      - run: ruff check src tests
+      - run: black --check src tests
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]" --extra-index-url https://download.pytorch.org/whl/cpu
+      - run: mypy src
+
+  test-py:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Cache torchvision weights
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TORCH_HOME }}
+          key: torchhub-resnet18-v1
+      - run: pip install -e ".[dev]" --extra-index-url https://download.pytorch.org/whl/cpu
+      - run: pytest -q
+
+  build-cpp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]" --extra-index-url https://download.pytorch.org/whl/cpu
+      - name: Configure
+        run: |
+          TORCH_DIR=$(python -c 'import torch, os; print(os.path.dirname(torch.__file__))')
+          cmake -S cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release -DTORCH_DIR=$TORCH_DIR
+      - name: Build
+        run: cmake --build build/cpp -j 2
+      - name: Test
+        run: ctest --output-on-failure --test-dir build/cpp
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: export_validator_compare-${{ runner.os }}
+          path: build/cpp/export_validator_compare
+          retention-days: 7
+
+  integration:
+    needs: [build-cpp, test-py]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Cache torchvision weights
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TORCH_HOME }}
+          key: torchhub-resnet18-v1
+      - run: pip install -e ".[dev]" --extra-index-url https://download.pytorch.org/whl/cpu
+      - name: Configure + build C++ comparator
+        run: |
+          TORCH_DIR=$(python -c 'import torch, os; print(os.path.dirname(torch.__file__))')
+          cmake -S cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release -DTORCH_DIR=$TORCH_DIR
+          cmake --build build/cpp -j 2 --target export_validator_compare
+      - name: Run end-to-end pipeline
+        env:
+          RUN_INTEGRATION: "1"
+          EXPORT_VALIDATOR_BINARY: ${{ github.workspace }}/build/cpp/export_validator_compare
+        run: |
+          pytest -q tests/integration
+      - name: Verify committed report still matches a fresh run
+        env:
+          EXPORT_VALIDATOR_BINARY: ${{ github.workspace }}/build/cpp/export_validator_compare
+        run: |
+          mkdir -p /tmp/freshrun
+          export-validator export --model resnet18 \
+              --out /tmp/freshrun/resnet18.onnx \
+              --layer-map /tmp/freshrun/layer_map.json
+          export-validator compare --model resnet18 \
+              --onnx /tmp/freshrun/resnet18.onnx \
+              --layer-map /tmp/freshrun/layer_map.json \
+              --report-base /tmp/freshrun/report \
+              --backend python --tolerance 1e-4
+          # The committed JSON should report the same layer count and the
+          # same drift_origin (null). We do not enforce byte-equal floats
+          # because they vary by ~1 ULP across host CPUs.
+          python - <<'PY'
+          import json, sys
+          fresh = json.load(open("/tmp/freshrun/report.json"))
+          comm  = json.load(open("examples/reports/resnet18_fp32.json"))
+          assert fresh["model"] == comm["model"], (fresh["model"], comm["model"])
+          assert fresh["layers_total"] == comm["layers_total"], (
+              fresh["layers_total"], comm["layers_total"])
+          assert fresh["drift_origin"] == comm["drift_origin"], (
+              fresh["drift_origin"], comm["drift_origin"])
+          assert [l["layer"] for l in fresh["layers"]] == \
+                 [l["layer"] for l in comm["layers"]], "layer order drifted"
+          print("committed report still matches fresh run")
+          PY
