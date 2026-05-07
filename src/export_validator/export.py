@@ -40,16 +40,20 @@ def export_with_named_layers(
     layer_map_path.parent.mkdir(parents=True, exist_ok=True)
 
     with torch.no_grad():
-        torch.onnx.export(
-            wrapper,
-            (sample_input,),
-            str(onnx_path),
-            input_names=["input"],
-            output_names=output_names,
-            opset_version=opset_version,
-            dynamic_axes={"input": {0: "batch"}},
-            do_constant_folding=False,
-        )
+        # Pin to the legacy TorchScript-based exporter. The dynamo-based
+        # exporter introduced in torch 2.5 does not preserve the
+        # tuple-of-tensors signature we rely on for per-layer named outputs,
+        # and additionally pulls in onnxscript as a hard dependency.
+        export_kwargs: dict[str, Any] = {
+            "input_names": ["input"],
+            "output_names": output_names,
+            "opset_version": opset_version,
+            "dynamic_axes": {"input": {0: "batch"}},
+            "do_constant_folding": False,
+        }
+        if "dynamo" in torch.onnx.export.__code__.co_varnames:
+            export_kwargs["dynamo"] = False
+        torch.onnx.export(wrapper, (sample_input,), str(onnx_path), **export_kwargs)
 
     onnx_model = onnx.load(str(onnx_path))
     onnx.checker.check_model(onnx_model)
