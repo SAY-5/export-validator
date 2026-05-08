@@ -130,20 +130,39 @@ and [`examples/reports/resnet18_fp32.md`](examples/reports/resnet18_fp32.md).
                 examples/reports/<model>.{json,md}
 ```
 
+## NCHW/NHWC layout-mismatch detection
+
+A separate module ``format_mismatch.py`` walks per-layer activation pairs
+and asks: for each layer that exceeds tolerance, does *permuting* one
+tensor onto the other restore agreement? If yes, that layer is flagged
+with the inferred permutation (e.g. ``(0, 2, 3, 1)`` for NCHW → NHWC).
+The module covers four-dimensional CNN tensors and three-dimensional
+transformer tensors (``(B, C, T)`` ↔ ``(B, T, C)``). It is a *detector*,
+not a fixer — it tells you where the layout flip happens, not how to
+patch it. See ``tests/unit/test_format_mismatch.py`` for the synthetic
+permute-injection contract.
+
+## Adjacent ML-systems-debug experiments (SAY-5)
+
+This repo answers **per-layer drift, in isolation**. Two adjacent
+experiments cover the orthogonal questions:
+
+- [SAY-5/onnx-deploy](https://github.com/SAY-5/onnx-deploy) — *whole-output*
+  parity, batched benchmarking, container packaging. The "is the whole
+  thing within tolerance" view that the layer-by-layer view here decomposes.
+- [SAY-5/quant-explorer](https://github.com/SAY-5/quant-explorer) — INT8/FP16
+  quantisation drift. Different ML-systems-debug angle: this repo's
+  attribution layer recognises ``precision_loss`` as a cause but does not
+  do quantisation calibration; that lives next door.
+
 ## What this is *not*
 
-- **Not a whole-output parity tool.** See [SAY-5/onnx-deploy](https://github.com/SAY-5/onnx-deploy)
-  for end-to-end output parity, batched benchmarking, and container packaging.
-  This repo is per-layer drift detection only.
-- **Not a quantization explorer.** It does FP32 export today; INT8/FP16
-  belong in a separate experiment.
-- **Not a layout-mismatch detector.** NCHW/NHWC and other format mismatches
-  are out of scope.
+- **Not a whole-output parity tool.** See `SAY-5/onnx-deploy`.
+- **Not a quantization explorer.** See `SAY-5/quant-explorer`. The
+  attribution layer here labels fp16 drift as ``precision_loss`` but does
+  not produce calibrated INT8 weights.
 - **Not a multi-EP comparator.** Only the CPU execution provider is wired up;
   CUDA/CoreML/TensorRT are out of scope.
-- **Not an automatic root-cause attribution engine.** The reported
-  `drift_origin` is the first violating layer in execution order — it
-  surfaces *where*, not *why*.
 
 ## Layout
 
