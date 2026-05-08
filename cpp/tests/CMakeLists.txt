@@ -10,6 +10,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(export_validator_tests
   test_differ.cpp
   test_json_writer.cpp
+  test_json_writer_random.cpp
   test_npz_loader.cpp
 )
 target_link_libraries(export_validator_tests PRIVATE
