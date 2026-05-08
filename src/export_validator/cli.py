@@ -9,6 +9,7 @@ import click
 import numpy as np
 import torch
 
+from . import attribution as attr
 from . import compare as cmp
 from . import export as exp
 from . import ort_capture, pt_capture, report
@@ -69,6 +70,15 @@ def export(model_name: str, out: Path, layer_map: Path) -> None:
     help="Comparator backend. 'auto' prefers C++ if available.",
 )
 @click.option("--seed", type=int, default=42)
+@click.option(
+    "--attribute/--no-attribute",
+    default=False,
+    help=(
+        "Classify the cause of every violating layer (weight_bit_mismatch, "
+        "op_implementation, precision_loss, unknown). Adds a sidecar JSON "
+        "and an extra Markdown column."
+    ),
+)
 def compare(
     model_name: str,
     onnx_path: Path,
@@ -77,6 +87,7 @@ def compare(
     tolerance: float,
     backend: str,
     seed: int,
+    attribute: bool,
 ) -> None:
     """Run PyTorch + ONNX Runtime, compare per layer, write reports."""
     model, _ = _MODELS[model_name]()
@@ -116,7 +127,10 @@ def compare(
         )
         backend_name = "python"
 
-    json_path, md_path = report.write_outputs(rpt, report_base)
+    causes = None
+    if attribute:
+        causes = attr.attribute_causes(rpt, model=model, onnx_path=onnx_path)
+    json_path, md_path = report.write_outputs(rpt, report_base, causes)
     click.echo(
         f"compared via {backend_name}: "
         f"{rpt.layers_exceeding}/{rpt.layers_total} layers exceed tol={tolerance:g}; "
@@ -124,6 +138,15 @@ def compare(
     )
     click.echo(f"json: {json_path}")
     click.echo(f"md:   {md_path}")
+    if causes is not None:
+        from collections import Counter
+
+        counts = Counter(c.cause for c in causes)
+        if counts:
+            summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+            click.echo(f"causes: {summary}")
+        else:
+            click.echo("causes: none (no layers exceeded tolerance)")
 
 
 @main.command()
