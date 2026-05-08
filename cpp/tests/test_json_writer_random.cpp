@@ -17,9 +17,11 @@
 // these tests must be updated alongside the writer.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <sstream>
 #include <stdexcept>
