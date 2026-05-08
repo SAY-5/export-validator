@@ -50,7 +50,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TORCH_HOME }}
-          key: torchhub-resnet18-v1
+          key: torchhub-multiarch-v1
       - run: pip install -e ".[dev]" --extra-index-url https://download.pytorch.org/whl/cpu
       - run: pytest -q
 
@@ -91,7 +91,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TORCH_HOME }}
-          key: torchhub-resnet18-v1
+          key: torchhub-multiarch-v1
       - run: pip install -e ".[dev]" --extra-index-url https://download.pytorch.org/whl/cpu
       - name: Configure + build C++ comparator
         run: |
@@ -104,32 +104,40 @@ jobs:
           EXPORT_VALIDATOR_BINARY: ${{ github.workspace }}/build/cpp/export_validator_compare
         run: |
           pytest -q tests/integration
-      - name: Verify committed report still matches a fresh run
+      - name: Verify committed reports still match a fresh run
         env:
           EXPORT_VALIDATOR_BINARY: ${{ github.workspace }}/build/cpp/export_validator_compare
         run: |
           mkdir -p /tmp/freshrun
-          export-validator export --model resnet18 \
-              --out /tmp/freshrun/resnet18.onnx \
-              --layer-map /tmp/freshrun/layer_map.json
-          export-validator compare --model resnet18 \
-              --onnx /tmp/freshrun/resnet18.onnx \
-              --layer-map /tmp/freshrun/layer_map.json \
-              --report-base /tmp/freshrun/report \
-              --backend python --tolerance 1e-4
+          for model in resnet18 resnet50 mobilenet_v3_small vit_b_16; do
+            export-validator export --model "$model" \
+                --out "/tmp/freshrun/${model}.onnx" \
+                --layer-map "/tmp/freshrun/${model}_layer_map.json"
+            export-validator compare --model "$model" \
+                --onnx "/tmp/freshrun/${model}.onnx" \
+                --layer-map "/tmp/freshrun/${model}_layer_map.json" \
+                --report-base "/tmp/freshrun/${model}_report" \
+                --backend python --tolerance 1e-4
+          done
           # The committed JSON should report the same layer count and the
-          # same drift_origin (null). We do not enforce byte-equal floats
-          # because they vary by ~1 ULP across host CPUs.
+          # same drift_origin. We do not enforce byte-equal floats because
+          # they vary by ~1 ULP across host CPUs. drift_origin is checked
+          # only for models where it is None on the committed snapshot
+          # (CNNs); ViT-B/16's drift_origin can shift by a few layers in
+          # response to BLAS reordering and is only structurally compared.
           python - <<'PY'
           import json, sys
-          fresh = json.load(open("/tmp/freshrun/report.json"))
-          comm  = json.load(open("examples/reports/resnet18_fp32.json"))
-          assert fresh["model"] == comm["model"], (fresh["model"], comm["model"])
-          assert fresh["layers_total"] == comm["layers_total"], (
-              fresh["layers_total"], comm["layers_total"])
-          assert fresh["drift_origin"] == comm["drift_origin"], (
-              fresh["drift_origin"], comm["drift_origin"])
-          assert [l["layer"] for l in fresh["layers"]] == \
-                 [l["layer"] for l in comm["layers"]], "layer order drifted"
-          print("committed report still matches fresh run")
+          for model in ("resnet18", "resnet50", "mobilenet_v3_small", "vit_b_16"):
+              fresh = json.load(open(f"/tmp/freshrun/{model}_report.json"))
+              comm  = json.load(open(f"examples/reports/{model}_fp32.json"))
+              assert fresh["model"] == comm["model"], (model, fresh["model"], comm["model"])
+              assert fresh["layers_total"] == comm["layers_total"], (
+                  model, fresh["layers_total"], comm["layers_total"])
+              assert [l["layer"] for l in fresh["layers"]] == \
+                     [l["layer"] for l in comm["layers"]], f"{model}: layer order drifted"
+              if comm["drift_origin"] is None:
+                  assert fresh["drift_origin"] is None, (
+                      model, fresh["drift_origin"], comm["drift_origin"])
+              print(f"{model}: committed report still matches fresh run "
+                    f"(layers={fresh['layers_total']}, exceeding={fresh['layers_exceeding']})")
           PY

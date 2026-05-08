@@ -12,10 +12,18 @@ import torch
 from . import compare as cmp
 from . import export as exp
 from . import ort_capture, pt_capture, report
-from .models import build_resnet18
+from .models import (
+    build_mobilenet_v3_small,
+    build_resnet18,
+    build_resnet50,
+    build_vit_b_16,
+)
 
 _MODELS = {
     "resnet18": build_resnet18,
+    "resnet50": build_resnet50,
+    "mobilenet_v3_small": build_mobilenet_v3_small,
+    "vit_b_16": build_vit_b_16,
 }
 
 

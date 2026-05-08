@@ -44,6 +44,34 @@ That is the actual finding — every layer of FP32 ResNet-18 lands within
 (CPU EP). Useful baseline for the next experiment (FP16, INT8, fused-Conv-BN
 graphs, etc.).
 
+## Multi-architecture parity sweep (FP32)
+
+Reports are committed under [`examples/reports/`](examples/reports/) for
+four torchvision architectures. The same exporter, capture, and compare
+path is reused for every model; the only per-model code is a 10-line
+builder under `src/export_validator/models/`.
+
+| model | leaves | layers exceeding 1e-4 | worst max_abs_diff | location |
+|---|---:|---:|---:|---|
+| `resnet18` | 60 | 0 | 9.537e-06 | `layer4.1.relu` |
+| `resnet50` | 158 | 0 | 4.578e-05 | `layer4.2.conv1` |
+| `mobilenet_v3_small` | 141 | 0 | 7.534e-05 | `features.4.block.0.0` |
+| `vit_b_16` | 100 | 12 | 1.812e-04 | `encoder.layers.encoder_layer_5.mlp.3` |
+
+The honest finding: **ViT-B/16 is the only one where some layers exceed the
+1e-4 envelope**. The drift originates at the MLP block of encoder layer 5
+(a `Linear(768, 3072)`) and propagates through the feed-forward path of
+the next several encoder blocks. CNNs of comparable depth (ResNet-50 at
+2× the parameter count) stay clean — accumulated fp32 drift in
+GEMM-heavy transformer MLPs is a real per-layer phenomenon that
+whole-output parity hides.
+
+ViT export also requires disabling PyTorch's MultiheadAttention fast-path
+(`torch.backends.mha.set_fastpath_enabled(False)`); the fused
+`aten::_native_multi_head_attention` op is not lowerable to ONNX opset 17
+via the legacy exporter. The `vit_b_16` builder applies that workaround
+internally. CNN builders are unaffected.
+
 A real subtlety surfaced during development: ResNet uses
 `nn.ReLU(inplace=True)` after every BatchNorm. The ONNX exporter records the
 BN node's output as a tensor that the in-place ReLU will mutate; without an
